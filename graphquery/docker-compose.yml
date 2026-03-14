@@ -1,0 +1,81 @@
+version: "3.9"
+
+services:
+
+  # ── Qdrant vector DB ────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Ollama LLM + embedding server ───────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    # Pull models on startup
+    entrypoint: >
+      sh -c "ollama serve &
+             sleep 5 &&
+             ollama pull llama3 &&
+             ollama pull nomic-embed-text &&
+             wait"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/ || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+
+  # ── RAG API (FastAPI) ────────────────────────────────────────────
+  rag-api:
+    build: .
+    container_name: rag-api
+    command: uvicorn api:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: llama3
+      EMBED_MODEL: nomic-embed-text
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Gradio UI ────────────────────────────────────────────────────
+  rag-ui:
+    build: .
+    container_name: rag-ui
+    command: python app.py
+    ports:
+      - "7860:7860"
+    environment:
+      API_PORT: 8000
+      # Point Gradio at the API container
+      GRADIO_HOST: 0.0.0.0
+      GRADIO_PORT: 7860
+    depends_on:
+      - rag-api
+    restart: unless-stopped
+
+
+volumes:
+  qdrant_data:
+  ollama_models:
